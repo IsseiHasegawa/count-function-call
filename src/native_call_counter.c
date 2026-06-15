@@ -7,7 +7,9 @@
 #include <string.h>
 
 typedef struct {
-    int count:
-    char file[PATH_MAX];
-    char function[FUNC_MAX];
-} ncc_call_t;
+    char *file;
+    char *function;
+    int line;
+    unsigned long long count;
+} NccEntry;
+
