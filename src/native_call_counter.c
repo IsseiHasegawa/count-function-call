@@ -1,0 +1,3 @@
+#ifndef NATIVE_CALL_COUNTER_H
+#define NATIVE_CALL_COUNTER_H
+
