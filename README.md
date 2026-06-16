@@ -1,182 +1,187 @@
 # count-function-call
 
-Native Call Counter is a small C/C++ instrumentation library for recording how many times target native functions are called during a test run.
+A small C/C++ library that counts how often instrumented native functions are called during a test run.
 
-It is designed for projects where the implementation is written in C or C++, but the tests may be written in another language, such as Python with `pytest`.
+Use it when the implementation is C/C++ but tests run in another language (e.g. Python `pytest` calling a C extension).
 
-For example, a Python test may call a Python API, which internally calls C/C++ functions. By inserting `NCC_RECORD_CALL();` into the target native functions, this tool records how often each function is executed.
+## What it answers
 
-## Goal
+- Was this C function executed during the test suite?
+- How many times was it called?
+- Which native functions are exercised by higher-level tests?
 
-The goal of this project is to answer questions such as:
-
-* Was this C/C++ function executed during the test suite?
-* How many times was this function called?
-* Which native functions are covered by tests written in another language?
-
-This is useful for analyzing native code coverage and for research on pseudo-tested code.
-
-## Repository Structure
+## Layout
 
 ```text
-native-call-counter/
-├── include/
-│   └── native_call_counter.h
-├── src/
-│   └── native_call_counter.c
+count-function-call/
+├── include/native_call_counter.h
+├── src/native_call_counter.c
 └── README.md
 ```
 
-## How It Works
+## Instrumentation
 
-Target C/C++ functions are manually instrumented with:
-
-```c
-NCC_RECORD_CALL();
-```
-
-When instrumentation is enabled, this macro expands to:
+Add the header and macro to each function you want to track:
 
 ```c
-ncc_record_call(__FILE__, __func__, __LINE__);
-```
+#include "native_call_counter.h"
 
-This records:
-
-* the source file name
-* the function name
-* the line number where the macro is inserted
-* the number of times the function was called
-
-At the end of the process, the collected results are written to a CSV file.
-
-## Example
-
-Suppose a target project has the following C function:
-
-```c
 static int Dict_iterNext(JSOBJ obj, JSONTypeContext *tc) {
     NCC_RECORD_CALL();
-
-    /* original function body */
+    /* ... */
 }
 ```
 
-If this function is called during a test run, Native Call Counter records the call.
+With `NCC_ENABLE` defined at compile time, the macro records `file`, `function`, `line`, and `count`. Without it, `NCC_RECORD_CALL()` is a no-op.
 
-Example CSV output:
+## Build integration
 
-```csv
-file,function,line,count
-"src/ujson/python/objToJSON.c","Dict_iterNext",123,154
-"src/ujson/python/objToJSON.c","Dict_iterEnd",145,38
+Link `native_call_counter.c` into the target binary and define `NCC_ENABLE`.
+
+| Requirement | Value |
+|-------------|-------|
+| Header | `#include "native_call_counter.h"` |
+| Source | `count-function-call/src/native_call_counter.c` |
+| Compile flag | `-DNCC_ENABLE` (or `define_macros=[("NCC_ENABLE", "1")]`) |
+
+---
+
+## Example: ultrajson (Python C extension)
+
+Assumes this repo layout:
+
+```text
+PesudoScope/
+├── count-function-call/
+└── ultrajson/
 ```
 
-## Building With a Target Project
+### 1. Instrument C sources
 
-This library is intended to be compiled together with the target project.
-
-The target project must include:
+In each target `.c` file:
 
 ```c
 #include "native_call_counter.h"
 ```
 
-or force-include the header at compile time.
+At the start of each function body:
 
-The implementation file must also be added to the target build:
-
-```text
-native-call-counter/src/native_call_counter.c
+```c
+NCC_RECORD_CALL();
 ```
 
-Instrumentation is enabled by defining:
+### 2. Build the extension with NCC enabled
 
-```text
-NCC_ENABLE
-```
-
-For example, a compiler command may include:
+From `PesudoScope/ultrajson` (not `PesudoScope/ultrajson/ultrajson`):
 
 ```bash
--DNCC_ENABLE
+cd ultrajson
+source .venv/bin/activate
 ```
-
-## Output File
-
-By default, the output file is:
-
-```text
-native_call_counts.csv
-```
-
-You can change the output path using the `NCC_OUTPUT` environment variable:
-
-```bash
-NCC_OUTPUT=my_call_counts.csv ./target_program
-```
-
-For Python-based tests, for example:
-
-```bash
-NCC_OUTPUT=ujson_call_counts.csv python -m pytest
-```
-
-## Integration Example With a Python C Extension
-
-For a Python package with C/C++ extension code, the flow is:
-
-```text
-1. Insert NCC_RECORD_CALL(); into target C/C++ functions.
-2. Compile the extension with NCC_ENABLE enabled.
-3. Run the Python test suite, such as pytest.
-4. Inspect the generated CSV file.
-```
-
-Example:
 
 ```bash
 NCC_ENABLE=1 \
-NCC_REPO=../native-call-counter \
+NCC_REPO=../count-function-call \
 python setup.py build_ext --inplace --force
 ```
 
-Then run:
+| Variable | Purpose |
+|----------|---------|
+| `NCC_ENABLE=1` | Enables counting (`NCC_RECORD_CALL` records calls) |
+| `NCC_REPO` | Path to this repo (default in `ultrajson/setup.py`: `../count-function-call`) |
+
+Confirm the build log contains `-DNCC_ENABLE=1` and compiles `native_call_counter.c`.
+
+Rebuild after changing instrumentation or C sources:
+
+```bash
+NCC_ENABLE=1 NCC_REPO=../count-function-call python setup.py build_ext --inplace --force
+```
+
+### 3. Run tests and write CSV
+
+The CSV is written when the **Python process exits** (`atexit`), not at build time.
 
 ```bash
 NCC_OUTPUT=native_call_counts.csv python -m pytest
 ```
 
-## Interpretation
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NCC_OUTPUT` | `native_call_counts.csv` | Output path (relative to current working directory) |
 
-If a function appears in the CSV file, it was executed during the test run.
-
-If a function does not appear in the CSV file, it was not observed during the test run.
-
-This can be used as a first step before mutation-based analysis:
+If you run pytest from `ultrajson/`, the file is:
 
 ```text
-Function not called
-→ uncovered
+ultrajson/native_call_counts.csv
+```
 
-Function called + mutation causes test failure
-→ tested / killed
+Run a single test:
 
-Function called + mutation does not cause test failure
-→ pseudo-tested candidate
+```bash
+NCC_OUTPUT=one_test.csv \
+python -m pytest tests/test_ujson.py::test_encode_list_conversion -q
+```
+
+Run the full suite:
+
+```bash
+NCC_OUTPUT=ujson_call_counts.csv python -m pytest
+```
+
+### 4. Read the CSV
+
+```bash
+cat native_call_counts.csv
+```
+
+Example:
+
+```csv
+file,function,line,count
+"./src/ujson/python/objToJSON.c","PyStringToUTF8",112,42
+```
+
+| Column | Meaning |
+|--------|---------|
+| `file` | Source file path |
+| `function` | C function name |
+| `line` | Line of `NCC_RECORD_CALL()` |
+| `count` | Times called during the run |
+
+- Row present → function was called.
+- Row absent → function was not called (or not instrumented).
+
+---
+
+## Generic C/C++ binary
+
+```bash
+# compile (example)
+clang -DNCC_ENABLE \
+  -I../count-function-call/include \
+  main.c ../count-function-call/src/native_call_counter.c \
+  -o my_program
+
+# run
+NCC_OUTPUT=my_call_counts.csv ./my_program
+```
+
+---
+
+## Interpretation (pseudo-testing workflow)
+
+```text
+Not in CSV          → uncovered by tests
+In CSV + mutation fails tests → tested
+In CSV + mutation passes tests  → pseudo-tested candidate
 ```
 
 ## Limitations
 
-This tool currently provides a simple function-call counter.
-
-Current limitations:
-
-* It requires manual insertion of `NCC_RECORD_CALL();`.
-* It does not automatically instrument all functions.
-* The current implementation is intended for simple single-process or basic test runs.
-* Multi-threaded programs may require synchronization support.
-* Parallel test execution may require separate output files per process.
+- Manual `NCC_RECORD_CALL()` insertion only
+- Single-process / simple test runs; no thread safety
+- Parallel pytest (`pytest-xdist`) may overwrite CSV per worker unless each process uses a different `NCC_OUTPUT`
 
 ## License
 
